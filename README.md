@@ -1,21 +1,3 @@
-Input wiring reference
-ChannelSourceNumbers 
-1–32 Track radar compositeBool
-2 Search radar “target found”Number 
-15–16 Search radar azimuth / elevationBool 
-3 Upward radar “target found”Number 
-18–19 Upward radar azimuth / elevationNumbers 
-5–13 Physics sensor (pos, euler, velocity) 
-Number 20 Time / counter for sweep (optional)
-
-Outputs
-OutputUseNumber 
-1 Yaw aimNumber 
-2 Pitch aimBool 
-1 Fire enable (already includes angle limit) 
-Number 3 Current mode (debug)
-
-
 # Stormworks Complete CIWS Build Guide
 
 Automatic dual-radar (search + track + upward) CIWS with closest-target priority, ballistic lead, orientation compensation, and self-fire protection.
