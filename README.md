@@ -1,142 +1,168 @@
-# Stormworks Complete CIWS Build Guide
+# Stormworks CIWS (in-game) — Build & Wiring Guide
 
-Automatic dual-radar (search + track + upward) CIWS with closest-target priority, ballistic lead, orientation compensation, and self-fire protection.
+`cwis.lua` is a Lua script for a **Stormworks microcontroller**. It reads radar and
+physics-sensor values, picks the closest target, applies a lead estimate, and outputs
+turret aim angles plus a fire-enable signal. This is for the Stormworks game only.
 
----
+This README describes **exactly what the script reads and writes**, channel by channel.
+Anything the script does *not* do (pivot control, signal routing) is marked as
+something you must build yourself.
 
-## 1. Turret Structure
-
-1. Place a **velocity pivot** (yaw) on the boat.
-2. Place a second **velocity pivot** (pitch) on top of the yaw pivot.
-3. Attach your gun(s) to the pitch pivot.
-4. Ensure the turret can elevate high enough (ideally close to 80–90°).
-
----
-
-## 2. Radars
-
-Mount three radars:
-
-| Radar | Mounting | Mode | FOV | Purpose |
-|-------|----------|------|-----|---------|
-| **Track radar** | On the turret, aligned with the guns | Static | Very small (long range) | Precise tracking + lead |
-| **Search radar** | Fixed to the boat (not on turret) | Sweep or Rotation | Wider (0.1–0.2) | Find targets around the boat |
-| **Upward radar** | On the turret or high on the boat, tilted upward (~60–80°) | Static or limited sweep | Medium-wide | Detect targets above |
-
-- Use **Phalanx** or **Basic** radars.
-- Power all three radars.
+> ⚠️ **Read [Known issues](#7-known-issues-in-the-current-script) before building.**
+> The current channel layout has overlaps, so a straight "plug the radar composite in"
+> build will not work as-is. The README documents the code as written, it does not fix it.
 
 ---
 
-## 3. Sensors
+## 1. Two kinds of wiring
 
-- Place a **Physics sensor** as close as possible to the track radar.
-  - Big arrow = forward (same direction as the guns)
-  - Small arrow = right
-- Optional: a second physics sensor at the boat’s center for more advanced self-fire checks later.
+| Term | Where you do it | What it means here |
+|------|-----------------|--------------------|
+| **External wiring** | On the vehicle, in the build editor | Logic links between physical blocks (radars, physics sensor, pivots, gun) and the microcontroller's input/output nodes. |
+| **Internal wiring** | Inside the microcontroller editor | Links between the microcontroller's input/output nodes and the **Lua script block**. |
 
----
-
-## 4. Microcontroller
-
-1. Add a **Microcontroller**.
-2. Open the Lua editor and paste the complete CIWS Lua script.
-3. Add the required input/output nodes (see wiring section below).
+The Lua block has **one composite input** and **one composite output**. Everything the
+script reads comes from that one input composite; everything it writes goes out on that
+one output composite. A composite carries number channels 1–32 and on/off (bool)
+channels 1–32 at the same time.
 
 ---
 
-## 5. Wiring
+## 2. What the script reads (Lua block composite INPUT)
 
-### Track radar
-- Composite output → Microcontroller (channels 1–32)
+### Number channels
 
-### Search radar
-- Target found (bool) → Bool input 2
-- Azimuth → Number input 15
-- Elevation → Number input 16
+| Channel | Variable | Expected meaning | Unit |
+|---------|----------|------------------|------|
+| 1, 5, 9, 13, 17, 21, 25, 29 | `d` (target 1–8) | Track radar: distance to target *i* | metres |
+| 2, 6, 10, 14, 18, 22, 26, 30 | `az` (target 1–8) | Track radar: azimuth of target *i* | turns (1 turn = 360°) |
+| 3, 7, 11, 15, 19, 23, 27, 31 | `el` (target 1–8) | Track radar: elevation of target *i* | turns |
+| 4, 8, …, 32 | — | **Not read** | — |
+| 5, 6, 7 | `posX, posY, posZ` | Physics sensor: world position | metres |
+| 8, 9, 10 | `eulX, eulY, eulZ` | Physics sensor: Euler orientation | radians (passed straight to `math.cos/sin`) |
+| 11, 12, 13 | `ownVx, ownVy, ownVz` | Physics sensor: own velocity | m/s (subtracted from a **world-frame** target velocity) |
+| 15, 16 | `searchAz, searchEl` | Search radar: azimuth / elevation | turns |
+| 18, 19 | `upAz, upEl` | Upward radar: azimuth / elevation | turns |
+| 20 | `time` | Optional sweep clock (any increasing number) | free unit; sweep = `sin(time*0.4)*0.4` |
 
-### Upward radar
-- Target found (bool) → Bool input 3
-- Azimuth → Number input 18
-- Elevation → Number input 19
+Track-radar slot *i* (i = 0…7) uses channels `1+4i`, `2+4i`, `3+4i`.
+A slot counts as a valid target only if `50 < distance < 15000` (`MIN_RANGE`, `MAX_RANGE`).
+The track radar's per-target "detected" bools are **not** read; only distance matters.
 
-### Physics sensor
-- Composite → Number inputs 5–13 (position, Euler angles, velocity)
+### Bool channels
 
-### Optional
-- A counter or timer → Number input 20 (for the idle sweep)
+| Channel | Variable | Expected meaning |
+|---------|----------|------------------|
+| 2 | `searchFound` | Search radar has a target |
+| 3 | `upFound` | Upward radar has a target |
 
-### Outputs
-- Number 1 (yaw) → Yaw pivot controller
-- Number 2 (pitch) → Pitch pivot controller
-- Bool 1 (fire) → Gun fire input
-
----
-
-## 6. Pivot Control
-
-### Velocity pivots (recommended)
-- Use a simple proportional controller or PID.
-- Error = Lua aim angle − current pivot angle.
-- Output of the controller → velocity pivot.
-
-### Robotic pivots
-- Multiply the Lua output by 4 before sending it to the pivot.
+Notice the overlaps in the number table (e.g. channel 5 is both "track target 2 distance"
+and "physics X"). See [Known issues](#7-known-issues-in-the-current-script).
 
 ---
 
-## 7. Configuration Checklist
+## 3. What the script writes (Lua block composite OUTPUT)
 
-- [ ] Track radar = Static, small FOV
-- [ ] Search radar = Sweep/Rotation, wider FOV
-- [ ] Upward radar = tilted upward
-- [ ] Physics sensor orientation correct
-- [ ] `PROJECTILE_SPEED` set to your gun’s velocity
-- [ ] `SAFE_AZ_MIN` / `SAFE_AZ_MAX` adjusted so the turret cannot shoot the boat
-- [ ] Electricity connected to everything
+| Channel | Type | Meaning | Unit / values |
+|---------|------|---------|---------------|
+| Number 1 | number | Yaw (azimuth) command | turns |
+| Number 2 | number | Pitch (elevation) command | turns |
+| Number 3 | number | Mode (debug) | `0` idle sweep, `1` slew, `2` track |
+| Number 4 | number | Distance of closest track-radar target (debug) | metres; a huge value (`math.huge`) when none |
+| Bool 1 | on/off | Fire enable | on only in mode 2 when the safety checks pass |
+| Bool 2 | on/off | Track filter valid (debug) | — |
 
----
+What Number 1 / Number 2 contain depends on the mode:
 
-## 8. Testing
+| Mode | When | Number 1 / Number 2 | Bool 1 |
+|------|------|---------------------|--------|
+| 2 Track | any track-radar slot valid | Lead aim angle, relative to the **physics sensor's** forward/right/up axes | `aimAz` within `SAFE_AZ_MIN..SAFE_AZ_MAX` **and** range ≥ `MIN_FIRE_RANGE` |
+| 1 Slew | no track target, upward radar found (priority) or else search radar found | That radar's raw azimuth/elevation, in **that radar's** own frame | off |
+| 0 Idle | nothing found | `sin(time*0.4)*0.4` / constant `0.05` | off |
 
-1. Spawn a target in front of the boat → turret should track and lead.
-2. Spawn a target behind → turret should not fire (angle limit).
-3. Spawn a high / overhead target → upward radar should detect it and slew the turret.
-4. Spawn multiple targets → it should always prefer the closest one.
-5. Move the boat and lean it → tracking should stay stable.
-
----
-
-## 9. Tuning Tips
-
-- Too much jitter → lower `FILTER_ALPHA` and `FILTER_BETA`.
-- Shots land behind the target → increase `PROJECTILE_SPEED`.
-- Shots land in front → decrease `PROJECTILE_SPEED`.
-- Turret sweeps too fast/slow when idle → change the `0.4` and `0.4` values in the sweep line.
+Important: these are **target angles**, not pivot speeds. The script contains no pivot
+controller.
 
 ---
 
-## Input Wiring Reference
+## 4. Build steps (in order)
 
-| Channel | Source |
-|---------|--------|
-| Numbers 1–32 | Track radar composite |
-| Bool 2 | Search radar “target found” |
-| Number 15–16 | Search radar azimuth / elevation |
-| Bool 3 | Upward radar “target found” |
-| Number 18–19 | Upward radar azimuth / elevation |
-| Numbers 5–13 | Physics sensor (pos, euler, velocity) |
-| Number 20 | Time / counter for sweep (optional) |
+1. **Turret:** a yaw pivot, a pitch pivot on top of it, the gun on the pitch pivot.
+2. **Track radar:** on the pitch stage, pointing exactly where the gun points.
+3. **Physics sensor:** on the turret next to the track radar, facing the same direction as
+   the gun (the script treats the sensor's forward axis as "azimuth 0, elevation 0").
+   Because the sensor moves with the turret, track-mode angles are **relative to where the
+   turret currently points** (an error angle), not absolute pivot positions.
+4. **Search radar:** fixed to the hull. **Upward radar:** fixed, tilted up.
+5. **Microcontroller:** paste `cwis.lua` into a Lua block. Add one composite input node and
+   one composite output node and connect them to the Lua block (internal wiring).
+6. **Build the input composite** (external wiring, plus composite write blocks inside the
+   microcontroller if you route individual signals) so each value lands on the channel in
+   section 2.
+7. **Edit the constants** at the top of `cwis.lua` (section 5).
+8. **Use the outputs:** build your own yaw/pitch controller (e.g. a P or PID controller
+   driving velocity pivots) from Number 1 / Number 2, and gate the gun's trigger with Bool 1.
+9. Power everything and test (section 6).
 
-## Outputs
+### Example signal paths
 
-| Output | Use |
-|--------|-----|
-| Number 1 | Yaw aim |
-| Number 2 | Pitch aim |
-| Bool 1 | Fire enable (includes angle limit) |
-| Number 3 | Current mode (debug) |
+- Track radar target 1 distance → input number 1 → `d` for slot 0 → closest-target pick →
+  world position via physics sensor → filter → lead → output Number 1/2.
+- Search radar "found" → input bool 2 → (if no track target and no upward target) mode 1
+  → search radar azimuth (input number 15) copied to output Number 1.
 
 ---
 
-Once wired and configured, the system will automatically search, slew, track the closest target, lead it, and refuse to fire through the boat — including overhead threats.
+## 5. Constants to set (top of `cwis.lua`)
+
+| Constant | Default | Meaning |
+|----------|---------|---------|
+| `PROJECTILE_SPEED` | 800 | Your gun's muzzle velocity, m/s (no drop/drag modelled) |
+| `MAX_LEAD_TIME` | 8 | Cap on lead time, s |
+| `FILTER_ALPHA` / `FILTER_BETA` | 0.35 / 0.12 | Alpha-beta filter gains; lower = smoother, slower |
+| `MIN_RANGE` / `MAX_RANGE` | 50 / 15000 | Valid track-radar distance window, m |
+| `MIN_FIRE_RANGE` | 40 | No fire below this range, m |
+| `SAFE_AZ_MIN` / `SAFE_AZ_MAX` | −0.30 / 0.30 | Allowed fire azimuth, turns, **relative to the physics sensor** |
+
+`DT` is fixed at 1/60 s (one tick).
+
+---
+
+## 6. Testing & troubleshooting
+
+Wire output Number 3, Number 4 and Bool 2 to dials/lamps so you can watch them.
+
+| Symptom | Check |
+|---------|-------|
+| Mode stays 0 | Bools 2/3 not arriving; track-radar distances outside 50–15000 m |
+| Mode jumps to 2 with no real target | Another signal (physics, search, upward) is landing on a track-radar channel (see known issues) |
+| Idle sweep doesn't move | Nothing on number 20 (unwired = 0, so output stays 0) |
+| Aim is mirrored/rotated | Physics sensor orientation; Euler order/sign assumptions |
+| Turret oscillates | Your pivot controller gains (not in this script) |
+| Shots behind / ahead | Raise / lower `PROJECTILE_SPEED` |
+
+---
+
+## 7. Known issues in the current script
+
+These need a decision/fix in the code; this README does not change the Lua.
+
+1. **Channel overlap (blocking).** The track-radar loop reads numbers 1–31, which collide
+   with physics sensor (5–13), search radar (15–16) and upward radar (18–19). Any physics
+   value between 50 and 15000 on channels 5/9/13 (e.g. world position, which is often large)
+   is treated as a target distance. To use it as written, the track radar must not share
+   the composite, or the code must be changed (e.g. limit the radar loop to fewer targets
+   or move other inputs to channels 4/8/12/… or to a second input).
+2. **Bool overlap.** If the track radar composite is fed in directly, its per-target bools
+   occupy bools 1–8, which collide with bools 2 and 3.
+3. **Physics sensor layout is assumed.** The script needs position on 5–7, Euler on 8–10,
+   velocity on 11–13. Whether a raw physics-sensor composite already has that layout was
+   not verified here; remap if needed. The script also assumes the velocity is in the
+   world frame and the Euler angles are in radians with its own rotation order.
+4. **Mixed frames in mode 1.** Slew uses search/upward radar angles in those radars'
+   frames, while track mode outputs angles relative to the turret-mounted physics sensor.
+   The two are not converted into the same reference, so a single pivot controller will
+   behave differently between modes.
+5. **Self-fire check is azimuth-only** and relative to the turret sensor, not the hull.
+   There is no elevation limit.
+6. **Lead ignores gravity and drag.**
